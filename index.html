@@ -208,6 +208,9 @@
 
 .toast{display:flex;align-items:center;gap:14px}
 #toastU{background:none;border:none;color:var(--gold);font-family:var(--font-display);font-size:12.5px;letter-spacing:.05em;padding:2px 4px}
+@keyframes shakeX{0%,100%{transform:translateX(0)}20%{transform:translateX(-10px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(4px)}}
+.pin-dots.shake{animation:shakeX .45s ease}
+.pin-dots.shake .pin-dot{border-color:#c25b6b}
 </style></head><body><div class="app">
 <header>
 <div class="brand-row">
@@ -234,6 +237,8 @@
 <div class="editor-header">
 <button class="icon-btn" id="eBack" data-i="back" aria-label="back"></button>
 <div class="editor-tools">
+<button class="icon-btn" id="eUndo" data-i="back" aria-label="undo"></button>
+<button class="icon-btn" id="eRedo" data-i="back" style="transform:scaleX(-1)" aria-label="redo"></button>
 <button class="icon-btn danger" id="eDel" data-i="trash" aria-label="delete"></button>
 <button class="icon-btn save" id="eSave">save</button>
 </div>
@@ -273,14 +278,28 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const P={back:'<path d="M15 5l-7 7 7 7"/>',dots:'<circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/>',plus:'<path d="M12 5v14M5 12h14"/>',pin:'<path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/>',trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/>',archive:'<path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4"/>',camera:'<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',image:'<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 17l5-5 4 4 3-3 4 4"/>',checksq:'<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12l3 3 5-6"/>',check:'<path d="M5 12l5 5 9-10"/>',lock:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',bksp:'<path d="M9 6h11v12H9l-5-6zM12 10l4 4M16 10l-4 4"/>',x:'<path d="M6 6l12 12M18 6L6 18"/>',spark:'<path d="M12 3l2 7 7 2-7 2-2 7-2-7-7-2 7-2z"/>',down:'<path d="M12 4v11M7 11l5 5 5-5M5 20h14"/>',up:'<path d="M12 16V5M7 9l5-5 5 5M5 20h14"/>',fplus:'<path d="M3 7h6l2 2h10v10H3zM12 12v5M9.5 14.5h5"/>',folder:'<path d="M3 7h6l2 2h10v10H3z"/>',edit:'<path d="M4 20h4L19 9l-4-4L4 16z"/>',key:'<circle cx="8" cy="14" r="4"/><path d="M11 11l9-9M16 6l3 3M18 4l2 2"/>'};
 const I=(n,f)=>'<svg class="ico" viewBox="0 0 24 24"'+(f?' style="fill:currentColor"':'')+'>'+P[n]+'</svg>';
 
-const DB=new Promise((res,rej)=>{const r=indexedDB.open('hollow',1);r.onupgradeneeded=()=>['meta','notes','imgs'].forEach(s=>r.result.createObjectStore(s,{keyPath:'id'}));r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
-const tx=async(s,m,f)=>{const d=await DB;return new Promise((res,rej)=>{const t=d.transaction(s,m),r=f(t.objectStore(s));t.oncomplete=()=>res(r.result);t.onerror=()=>rej(t.error)})};
+const DB=new Promise((res,rej)=>{
+  const r=indexedDB.open('hollow',2);
+  r.onupgradeneeded=(ev)=>{const db=r.result;['meta','notes','imgs'].forEach(s=>{if(!db.objectStoreNames.contains(s))db.createObjectStore(s,{keyPath:'id'})})};
+  r.onsuccess=()=>res(r.result);
+  r.onerror=()=>{console.error('DB open failed',r.error);rej(r.error)};
+  r.onblocked=()=>{console.error('DB open blocked - another tab may have an old version open')};
+});
+DB.catch(e=>{document.addEventListener('DOMContentLoaded',()=>{},{once:true});setTimeout(()=>{try{toast('storage error: '+(e&&e.message||'unknown'))}catch(_){}},600)});
+const tx=async(s,m,f)=>{const d=await DB;return new Promise((res,rej)=>{try{const t=d.transaction(s,m),r=f(t.objectStore(s));t.oncomplete=()=>res(r.result);t.onerror=()=>{console.error('tx error',t.error);try{toast('save failed: '+(t.error&&t.error.message||'storage error'))}catch(_){}rej(t.error)}}catch(err){console.error('tx threw',err);try{toast('save failed: '+err.message)}catch(_){}rej(err)}})};
 const dbGet=(s,k)=>tx(s,'readonly',o=>o.get(k));
 const dbAll=s=>tx(s,'readonly',o=>o.getAll());
 const dbPut=(s,v)=>tx(s,'readwrite',o=>o.put(v));
 const dbDel=(s,k)=>tx(s,'readwrite',o=>o.delete(k));
 
 let S={n:[],f:[],af:[],todos:[],pin:null},mode='n',arch=0,folder=null,cur=null,tt,selOn=0,selSet=new Set();
+
+// ---------- multi-step undo/redo ----------
+let hist=[],histI=-1;
+function record(undoFn,redoFn,label){hist=hist.slice(0,histI+1);hist.push({undoFn,redoFn,label});if(hist.length>50)hist.shift();else histI++;histI=hist.length-1;updateUndoBtns()}
+async function doUndo(){if(histI<0)return;const e=hist[histI];await e.undoFn();histI--;render();updateUndoBtns();toast('undone: '+e.label)}
+async function doRedo(){if(histI>=hist.length-1)return;histI++;const e=hist[histI];await e.redoFn();render();updateUndoBtns();toast('redone: '+e.label)}
+function updateUndoBtns(){const u=$('eUndo'),r=$('eRedo');if(!u)return;u.disabled=histI<0;r.disabled=histI>=hist.length-1;u.style.opacity=u.disabled?'.35':'1';r.style.opacity=r.disabled?'.35':'1'}
 const saveMeta=()=>dbPut('meta',{id:'m',f:S.f,af:S.af,pin:S.pin,todos:S.todos});
 let utt,undoFn=null;
 const toast=(m,uFn)=>{const e=$('toast'),u=$('toastU');$('toastT').textContent=m;undoFn=uFn||null;u.style.display=uFn?'':'none';e.classList.add('show');clearTimeout(tt);clearTimeout(utt);tt=setTimeout(()=>{e.classList.remove('show');undoFn=null},uFn?4200:2000)};
@@ -297,13 +316,20 @@ $('bd').onclick=closeSheet;
 let navStack=[];
 function pushNav(tag){navStack.push(tag);history.pushState({d:navStack.length},'')}
 function popNav(){if(navStack.length){navStack.pop();history.back()}}
+let lastExitAttempt=0;
 window.addEventListener('popstate',()=>{
-  if($('lock').classList.contains('open')){$('lock').classList.remove('open');navStack.pop();pinChangeMode=0;return}
-  if($('pm').classList.contains('open')){$('pm').classList.remove('open');navStack.pop();return}
-  if($('sh').classList.contains('open')){closeSheet(true);return}
-  if($('ed').classList.contains('open')){commit(true);return}
-  if(selOn){selOff(true);return}
-  if(arch){arch=0;folder=null;mode='n';render();return} // archive -> home on back
+  if($('lock').classList.contains('open')){$('lock').classList.remove('open');navStack.pop();pinChangeMode=0;pushNav('_reguard');return}
+  if($('pm').classList.contains('open')){$('pm').classList.remove('open');navStack.pop();pushNav('_reguard');return}
+  if($('sh').classList.contains('open')){closeSheet(true);pushNav('_reguard');return}
+  if($('ed').classList.contains('open')){commit(true);pushNav('_reguard');return}
+  if(selOn){selOff(true);pushNav('_reguard');return}
+  if(arch){arch=0;folder=null;mode='n';render();pushNav('_reguard');return} // archive -> home on back
+  // at home screen: require a second swipe within 1s to actually exit
+  const now=Date.now();
+  if(now-lastExitAttempt<1000){return} // let this one through, app exits
+  lastExitAttempt=now;
+  toast('swipe back again to exit');
+  pushNav('_reguard');
 });
 // pull-to-refresh: while in archive, a top-of-page downward pull should exit archive, not reload
 let ptStartY=null;
@@ -325,8 +351,14 @@ $('selDel').onclick=async()=>{
   let removed;
   if(isNotes){removed=S.n.filter(n=>ids.includes(n.id));S.n=S.n.filter(n=>!ids.includes(n.id));for(const n of removed)await dbDel('notes',n.id)}
   else{removed=S.todos.filter(t=>ids.includes(t.id));S.todos=S.todos.filter(t=>!ids.includes(t.id));await saveMeta()}
-  selOff();render();
-  toast(removed.length+' deleted',async()=>{if(isNotes){for(const n of removed){S.n.push(n);await dbPut('notes',n)}}else{S.todos.push(...removed);await saveMeta()}render();toast('restored')});
+  selOff();
+  record(
+    async()=>{if(isNotes){for(const n of removed){S.n.push(n);await dbPut('notes',n)}}else{S.todos.push(...removed);await saveMeta()}},
+    async()=>{if(isNotes){for(const n of removed){S.n=S.n.filter(x=>x.id!==n.id);await dbDel('notes',n.id)}}else{S.todos=S.todos.filter(t=>!ids.includes(t.id));await saveMeta()}},
+    removed.length+' item(s) deleted'
+  );
+  render();
+  toast(removed.length+' deleted');
 };
 
 function noteCard(n){
@@ -346,7 +378,7 @@ act([
   ['folder','Move to folder',()=>{const L=n.arch?S.af:S.f;if(!L.length){toast('create a folder first');return}act([['x','No folder',async()=>{n.folder=null;await dbPut('notes',n);render();toast('no folder')}],...L.map(f=>['folder',f,async()=>{n.folder=f;await dbPut('notes',n);render();toast('folder: '+f)}])])}],
   ['lock',n.arch?'Move out of archive':'Move to archive',async()=>{n.arch=n.arch?0:1;const f=n.folder;if(f){const L=n.arch?S.af:S.f;if(!L.includes(f))L.push(f);await saveMeta()}await dbPut('notes',n);render();toast(n.arch?'moved to archive':'moved out of archive')}],
   ['edit','Select multiple',()=>selOn_(n.id)],
-  ['trash','Delete',async()=>{const copy=n;S.n=S.n.filter(x=>x!==copy);await dbDel('notes',copy.id);render();toast('note deleted',async()=>{S.n.push(copy);await dbPut('notes',copy);render();toast('restored')})},1]
+  ['trash','Delete',async()=>{const copy=n;S.n=S.n.filter(x=>x!==copy);await dbDel('notes',copy.id);record(async()=>{S.n.push(copy);await dbPut('notes',copy)},async()=>{S.n=S.n.filter(x=>x.id!==copy.id);await dbDel('notes',copy.id)},'note deleted');render();toast('note deleted')},1]
 ]);
 }
 
@@ -356,13 +388,13 @@ const r=document.createElement('div');r.className='todo-card'+(selSet.has(t.id)?
 const dot=selOn?'<div class="sel-dot'+(selSet.has(t.id)?' on':'')+'">'+(selSet.has(t.id)?I('check'):'')+'</div>':'';
 r.innerHTML=dot+'<div class="todo-check'+(t.done?' done':'')+'">'+I('check')+'</div><div class="todo-body"><div class="todo-text'+(t.done?' done':'')+'">'+esc(t.text)+'</div><div class="todo-meta"><span class="note-date">'+fd(t.created)+'</span>'+(t.pinned?'<span class="todo-pin">'+I('pin',1)+'</span>':'')+'</div></div>';
 if(selOn){r.onclick=()=>selToggle(t.id)}
-else{r.querySelector('.todo-check').onclick=(e)=>{e.stopPropagation();t.done=t.done?0:1;saveMeta();if(t.done){glowFx(r);setTimeout(render,900)}else render()}}
+else{r.querySelector('.todo-check').onclick=(e)=>{e.stopPropagation();t.done=t.done?0:1;saveMeta();const chk=r.querySelector('.todo-check'),txt=r.querySelector('.todo-text');if(t.done){chk.classList.add('done');chk.innerHTML=I('check');txt.classList.add('done');glowFx(r);setTimeout(render,900)}else{chk.classList.remove('done');chk.innerHTML='';txt.classList.remove('done');render()}}}
 lp(r,()=>selOn?null:todoAct(t));
 row.appendChild(r);$('list').appendChild(row)}
 
 function glowFx(el){el.classList.add('glowing');const marks=['+','+','\u2727'];for(let i=0;i<5;i++){const s=document.createElement('span');s.className='spark';s.textContent=marks[i%marks.length];s.style.left=(10+Math.random()*80)+'%';s.style.top=(20+Math.random()*40)+'%';s.style.animationDelay=(i*80)+'ms';el.appendChild(s)}setTimeout(()=>{el.classList.remove('glowing');el.querySelectorAll('.spark').forEach(s=>s.remove())},1500)}
 
-function todoAct(t){act([['edit','Edit',()=>{const v=prompt('Edit to-do:',t.text);if(v&&v.trim()){t.text=v.trim();saveMeta();render()}}],['pin',t.pinned?'Unpin':'Pin',()=>{t.pinned=t.pinned?0:1;saveMeta();render()}],['edit','Select multiple',()=>selOn_(t.id)],['trash','Delete',()=>{const copy=t;S.todos=S.todos.filter(x=>x!==copy);saveMeta();render();toast('to-do deleted',()=>{S.todos.push(copy);saveMeta();render();toast('restored')})},1]])}
+function todoAct(t){act([['edit','Edit',()=>{const v=prompt('Edit to-do:',t.text);if(v&&v.trim()){t.text=v.trim();saveMeta();render()}}],['pin',t.pinned?'Unpin':'Pin',()=>{t.pinned=t.pinned?0:1;saveMeta();render()}],['edit','Select multiple',()=>selOn_(t.id)],['trash','Delete',()=>{const copy=t;S.todos=S.todos.filter(x=>x!==copy);saveMeta();record(async()=>{S.todos.push(copy);await saveMeta()},async()=>{S.todos=S.todos.filter(x=>x!==copy);await saveMeta()},'to-do deleted');render();toast('to-do deleted')},1]])}
 function addTodo(){if($('sh').classList.contains('open'))return;$('shBody').innerHTML='<input class="search-box" id="tIn" placeholder="what needs doing…" style="margin:8px 8px 10px;width:calc(100% - 16px)"><button class="sheet-item" id="tGo" style="justify-content:center;color:var(--gold)">Add</button>';openSheet();setTimeout(()=>$('tIn').focus(),250);const go=()=>{const v=$('tIn').value.trim();if(v){S.todos.push({id:uid(),text:v,done:0,pinned:0,created:Date.now()});saveMeta();render()}closeSheet()};$('tGo').onclick=go;$('tIn').onkeydown=e=>{if(e.key==='Enter')go()}}
 
 function render(){
@@ -373,7 +405,10 @@ $('mNotes').classList.toggle('active',mode==='n');$('mTodos').classList.toggle('
 const nm=arch||mode==='n';$('rail').style.display=nm?'':'none';if(nm)rail();
 $('list').innerHTML='';
 const q=$('q').value.trim().toLowerCase();let items;
-if(nm){items=S.n.filter(n=>!!n.arch===!!arch&&(!folder||n.folder===folder)&&(!q||(n.title+' '+n.body+' '+(n.checks||[]).map(c=>c.t).join(' ')).toLowerCase().includes(q))).sort((a,b)=>((+b.pinned||0)-(+a.pinned||0))||(b.updated-a.updated));items.forEach(noteCard)}
+if(nm){items=S.n.filter(n=>!!n.arch===!!arch&&(!folder||n.folder===folder)&&(!q||(n.title+' '+n.body+' '+(n.checks||[]).map(c=>c.t).join(' ')).toLowerCase().includes(q)));
+  if(folder===null){items.sort((a,b)=>((+b.pinned||0)-(+a.pinned||0))||((b.viewed||b.updated)-(a.viewed||a.updated)))}
+  else{items.sort((a,b)=>((+b.pinned||0)-(+a.pinned||0))||(b.updated-a.updated))}
+  items.forEach(noteCard)}
 else{items=S.todos.filter(t=>!q||t.text.toLowerCase().includes(q)).sort((a,b)=>((+b.pinned||0)-(+a.pinned||0))||((+a.done||0)-(+b.done||0))||(b.created-a.created));items.forEach(todoRow)}
 $('empty').style.display=items.length?'none':'block';
 $('emptyT').innerHTML=arch?'archive is empty.':nm?'nothing here yet.<br>tap + to leave something behind.':'no to-dos yet.<br>tap + to add one.'}
@@ -384,16 +419,32 @@ $('bArch').onclick=()=>{if(arch){arch=0;folder=null;render()}else openLock()};
 // ---------- editor: single contenteditable field (title + body selectable together) ----------
 const setFs=v=>{cur.fs=+v;$('eField').style.fontSize=v+'px';$('eChecks').style.fontSize=v+'px'};
 function fieldHtml(n){const t=esc(n.title||''),b=(n.body||'').split('\n').map(esc).join('<br>');return '<div class="ttl" data-ph="untitled">'+t+'</div><div class="bd" data-ph="start writing\u2026">'+b+'</div>'}
-function readField(){const f=$('eField');const ttl=f.querySelector('.ttl'),bd=f.querySelector('.bd');const title=ttl?ttl.innerText.replace(/\n+$/,''):'';let body=bd?bd.innerHTML:'';const tmp=document.createElement('div');tmp.innerHTML=body;const imgs=[...tmp.querySelectorAll('img')].map(im=>im.dataset.id);const bodyText=bd?bd.innerText.replace(/\n+$/,''):'';return{title,body:bodyText,imgOrder:imgs}}
+function readField(){const f=$('eField');const ttl=f.querySelector('.ttl'),bd=f.querySelector('.bd');const safeText=el=>{if(!el)return'';const t=el.innerText;return(typeof t==='string'?t:(el.textContent||'')).replace(/\n+$/,'')};const title=safeText(ttl);let body=bd?bd.innerHTML:'';const tmp=document.createElement('div');tmp.innerHTML=body;const imgs=[...tmp.querySelectorAll('img')].map(im=>im.dataset.id);const bodyText=safeText(bd);return{title,body:bodyText,imgOrder:imgs}}
 function scrollCaret(){const sel=window.getSelection();if(!sel.rangeCount)return;const r=sel.getRangeAt(0).cloneRange();r.collapse(false);const rect=r.getBoundingClientRect();if(!rect||(!rect.top&&!rect.bottom))return;const pad=90;if(rect.bottom>window.innerHeight-pad){window.scrollBy({top:rect.bottom-(window.innerHeight-pad),behavior:'smooth'})}else if(rect.top<pad+60){window.scrollBy({top:rect.top-(pad+60),behavior:'smooth'})}}
-$('eField').addEventListener('input',()=>{scrollCaret()});
+let autosaveT=null;
+async function silentSave(){
+  if(!cur)return;
+  try{
+    const f=readField();
+    cur.checks=(cur.checks||[]).filter(c=>c.t.trim());
+    const empty=!f.title&&!f.body&&!cur.checks.length&&!cur.imgs.length;
+    if(empty)return;
+    Object.assign(cur,{title:f.title,body:f.body,updated:Date.now()});
+    if(!S.n.includes(cur))S.n.push(cur);
+    await dbPut('notes',cur);
+  }catch(err){console.error('autosave failed',err);toast('autosave failed: '+err.message)}
+}
+function scheduleAutosave(){clearTimeout(autosaveT);autosaveT=setTimeout(silentSave,700)}
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&cur){clearTimeout(autosaveT);silentSave()}});
+$('eField').addEventListener('input',()=>{scrollCaret();scheduleAutosave()});
 $('eField').addEventListener('keyup',e=>{if(['Enter','ArrowDown','ArrowUp'].includes(e.key))scrollCaret()});
 
 function openEd(id){cur=id?S.n.find(n=>n.id===id):{id:uid(),title:'',body:'',checks:[],imgs:[],folder:folder,pinned:0,arch:arch?1:0,fs:16,created:Date.now(),updated:Date.now()};cur.checks=cur.checks||[];cur.imgs=cur.imgs||[];
+if(id){cur.viewed=Date.now();dbPut('notes',cur)}
 $('eField').innerHTML=fieldHtml(cur);setFs(cur.fs||16);
 loadImgsInline();
 rc();
-$('ed').classList.add('open');pushNav('editor');
+$('ed').classList.add('open');pushNav('editor');updateUndoBtns();
 if(!id){const t=$('eField').querySelector('.ttl');setTimeout(()=>{t.focus()},250)}}
 function closeEd(){$('ed').classList.remove('open');$('pm').classList.remove('open');cur=null;popNav()}
 
@@ -401,15 +452,19 @@ async function loadImgsInline(){const bd=$('eField').querySelector('.bd');if(!bd
 
 let lastSavedId=null;
 async function commit(fromPop){
+clearTimeout(autosaveT);
 if(!cur)return;
+try{
 const f=readField();
-cur.checks=cur.checks.filter(c=>c.t.trim());
+cur.checks=(cur.checks||[]).filter(c=>c.t.trim());
 const empty=!f.title&&!f.body&&!cur.checks.length&&!cur.imgs.length;
 if(!empty){Object.assign(cur,{title:f.title,body:f.body,updated:Date.now()});if(!S.n.includes(cur))S.n.push(cur);await dbPut('notes',cur);lastSavedId=cur.id}
 $('ed').classList.remove('open');$('pm').classList.remove('open');cur=null;if(!fromPop)popNav();
-render();if(!empty)toast('saved')}
+render();if(!empty)toast('saved')
+}catch(err){console.error('save failed',err);toast('save failed: '+err.message);$('ed').classList.remove('open');cur=null;if(!fromPop)popNav();render()}
+}
 
-function rc(fi){const w=$('eChecks');w.innerHTML='';cur.checks.forEach((c,i)=>{const r=document.createElement('div');r.className='chk-row';r.innerHTML='<div class="todo-check'+(c.d?' done':'')+'">'+I('check')+'</div><input class="chk-in'+(c.d?' done':'')+'" value="'+esc(c.t)+'" placeholder="list item"><button class="icon-btn" aria-label="remove item">'+I('x')+'</button>';const inp=r.querySelector('input');r.querySelector('.todo-check').onclick=()=>{c.d=c.d?0:1;rc()};inp.oninput=()=>{c.t=inp.value};inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();cur.checks.splice(i+1,0,{t:'',d:0});rc(i+1)}};r.querySelector('button').onclick=()=>{cur.checks.splice(i,1);rc()};w.appendChild(r);if(i===fi)setTimeout(()=>inp.focus(),0)})}
+function rc(fi){const w=$('eChecks');w.innerHTML='';cur.checks.forEach((c,i)=>{const r=document.createElement('div');r.className='chk-row';r.innerHTML='<div class="todo-check'+(c.d?' done':'')+'">'+I('check')+'</div><input class="chk-in'+(c.d?' done':'')+'" value="'+esc(c.t)+'" placeholder="list item"><button class="icon-btn" aria-label="remove item">'+I('x')+'</button>';const inp=r.querySelector('input');r.querySelector('.todo-check').onclick=()=>{c.d=c.d?0:1;rc()};inp.oninput=()=>{c.t=inp.value;scheduleAutosave()};inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();cur.checks.splice(i+1,0,{t:'',d:0});rc(i+1)}};r.querySelector('button').onclick=()=>{cur.checks.splice(i,1);rc()};w.appendChild(r);if(i===fi)setTimeout(()=>inp.focus(),0)})}
 
 function shrink(f){return new Promise(r=>{const im=new Image(),u=URL.createObjectURL(f);im.onload=()=>{const k=Math.min(1,1600/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(u);r(c.toDataURL('image/jpeg',.8))};im.onerror=()=>r(null);im.src=u})}
 
@@ -430,7 +485,8 @@ if(n)toast(n+' photo'+(n>1?'s':'')+' added')}
 $('fCam').onchange=$('fImg').onchange=async e=>{await addFiles(e.target.files);e.target.value=''};
 
 $('eBack').onclick=$('eSave').onclick=commit;
-$('eDel').onclick=async()=>{if(!cur||!confirm('Delete this note?'))return;const c=cur;S.n=S.n.filter(n=>n!==c);await dbDel('notes',c.id);for(const i of c.imgs)await dbDel('imgs',i);closeEd();render();toast('note deleted',async()=>{S.n.push(c);await dbPut('notes',c);render();toast('restored')})};
+$('eUndo').onclick=doUndo;$('eRedo').onclick=doRedo;
+$('eDel').onclick=async()=>{if(!cur||!confirm('Delete this note?'))return;const c=cur;S.n=S.n.filter(n=>n!==c);await dbDel('notes',c.id);for(const i of c.imgs)await dbDel('imgs',i);closeEd();record(async()=>{S.n.push(c);await dbPut('notes',c)},async()=>{S.n=S.n.filter(n=>n.id!==c.id);await dbDel('notes',c.id)},'note deleted');render();toast('note deleted')};
 $('eFs').oninput=e=>setFs(e.target.value);
 $('ePlus').onclick=()=>$('pm').classList.toggle('open');
 $('pCam').onclick=()=>{$('pm').classList.remove('open');$('fCam').click()};
@@ -446,19 +502,20 @@ $('bMenu').onclick=()=>act([['fplus','New folder',newFolder],['key','Change arch
 // ---------- PIN ----------
 let pb='',ps='e',pf='',pinChangeMode=0;
 const dots=()=>[...$('dots').children].forEach((d,i)=>d.classList.toggle('filled',i<pb.length));
+function shakePins(){const d=$('dots');d.classList.remove('shake');void d.offsetWidth;d.classList.add('shake')}
 function pad(){const p=$('pad');p.innerHTML='';['1','2','3','4','5','6','7','8','9','','0','b'].forEach(k=>{const b=document.createElement('button');b.className='pin-key'+(k?'':' ghost');if(k==='b')b.innerHTML=I('bksp');else b.textContent=k;if(k)b.onclick=()=>key(k);else b.disabled=true;p.appendChild(b)})}
 function key(k){if(k==='b'){pb=pb.slice(0,-1);dots();return}if(pb.length>=4)return;pb+=k;dots();if(pb.length===4)setTimeout(chk,150)}
 function chk(){
 if(pinChangeMode===1){ // verifying old pin before change
   if(pb===S.pin){pinChangeMode=2;pb='';ps='s1';$('lockSub').textContent='set a new PIN';dots()}
-  else{toast('wrong PIN');pb='';dots()}
+  else{toast('wrong PIN');pb='';dots();shakePins()}
   return;
 }
 if(!S.pin||pinChangeMode===2){
   if(ps==='s1'){pf=pb;pb='';ps='s2';$('lockSub').textContent='confirm your PIN';dots()}
   else if(pb===pf){S.pin=pb;saveMeta();if(pinChangeMode===2){pinChangeMode=0;$('lock').classList.remove('open');popNav();toast('PIN updated')}else unlock()}
   else{toast("PINs didn't match");pb='';pf='';ps='s1';$('lockSub').textContent='set a new PIN';dots()}
-}else if(pb===S.pin)unlock();else{toast('wrong PIN');pb='';dots()}}
+}else if(pb===S.pin)unlock();else{toast('wrong PIN');pb='';dots();shakePins()}}
 function openLock(change){pb='';pf='';pinChangeMode=change?(S.pin?1:2):0;pad();dots();
 if(pinChangeMode===1){ps='e';$('lockHint').style.display='none';$('lockSub').textContent='enter current PIN'}
 else if(!S.pin||pinChangeMode===2){ps='s1';$('lockHint').style.display='block';$('lockSub').textContent='set a new PIN'}
