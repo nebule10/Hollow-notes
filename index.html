@@ -521,7 +521,7 @@ if(pinChangeMode===1){ps='e';$('lockHint').style.display='none';$('lockSub').tex
 else if(!S.pin||pinChangeMode===2){ps='s1';$('lockHint').style.display='block';$('lockSub').textContent='set a new PIN'}
 else{ps='e';$('lockHint').style.display='none';$('lockSub').textContent='enter your PIN'}
 $('lock').classList.add('open');pushNav('lock')}
-function unlock(){$('lock').classList.remove('open');popNav();arch=1;folder=null;render();toast('archive unlocked')}
+function unlock(){$('lock').classList.remove('open');navStack.pop();arch=1;folder=null;render();toast('archive unlocked')}
 $('lockBack').onclick=()=>{$('lock').classList.remove('open');popNav();pinChangeMode=0};
 
 async function migrate(){try{const o=JSON.parse(localStorage.getItem('hollow_data_v2')||'null');if(o){S.pin=o.pin||null;S.todos=[...(o.todos||[]),...(o.archiveTodos||[])].map(t=>({id:t.id,text:t.text,done:t.done?1:0,pinned:t.pinned?1:0,created:t.created||Date.now()}));const mk=(n,a)=>({id:n.id,title:n.title||'',body:n.body||'',checks:[],imgs:[],folder:null,pinned:n.pinned?1:0,arch:a,fs:16,created:n.created||Date.now(),updated:n.updated||Date.now()});S.n=[...(o.notes||[]).map(n=>mk(n,0)),...(o.archiveNotes||[]).map(n=>mk(n,1))];for(const n of S.n)await dbPut('notes',n)}}catch(e){}await saveMeta()}
