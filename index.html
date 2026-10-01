@@ -418,8 +418,41 @@ $('bArch').onclick=()=>{if(arch){arch=0;folder=null;render()}else openLock()};
 
 // ---------- editor: single contenteditable field (title + body selectable together) ----------
 const setFs=v=>{cur.fs=+v;$('eField').style.fontSize=v+'px';$('eChecks').style.fontSize=v+'px'};
-function fieldHtml(n){const t=esc(n.title||''),b=(n.body||'').split('\n').map(esc).join('<br>');return '<div class="ttl" data-ph="untitled">'+t+'</div><div class="bd" data-ph="start writing\u2026">'+b+'</div>'}
-function readField(){const f=$('eField');const ttl=f.querySelector('.ttl'),bd=f.querySelector('.bd');const safeText=el=>{if(!el)return'';const t=el.innerText;return(typeof t==='string'?t:(el.textContent||'')).replace(/\n+$/,'')};const title=safeText(ttl);let body=bd?bd.innerHTML:'';const tmp=document.createElement('div');tmp.innerHTML=body;const imgs=[...tmp.querySelectorAll('img')].map(im=>im.dataset.id);const bodyText=safeText(bd);return{title,body:bodyText,imgOrder:imgs}}
+function fieldHtml(n){
+  const t=esc(n.title||'');
+  // bodyHtml (new format) preserves exact structure incl. image placement.
+  // Falls back to legacy plain-text body for notes saved before this fix.
+  let b;
+  if(n.bodyHtml){b=n.bodyHtml}
+  else{b=(n.body||'').split('\n').map(esc).join('<br>')}
+  return '<div class="ttl" data-ph="untitled">'+t+'</div><div class="bd" data-ph="start writing\u2026">'+b+'</div>'
+}
+function domToText(el){
+  // Walks child nodes explicitly instead of relying on innerText, which behaves
+  // inconsistently across mobile WebViews when contenteditable wraps new lines
+  // in <div>/<p> instead of inserting <br>.
+  if(!el)return'';
+  let out='';
+  const BLOCK=new Set(['DIV','P']);
+  function walk(node,isRoot){
+    for(const child of node.childNodes){
+      if(child.nodeType===3){out+=child.nodeValue}
+      else if(child.nodeType===1){
+        if(child.tagName==='BR'){out+='\n'}
+        else if(child.classList&&child.classList.contains('img-del')){/* images excluded from text */}
+        else{
+          const startLen=out.length;
+          walk(child,false);
+          if(BLOCK.has(child.tagName)&&!isRoot&&out.length>startLen)out+='\n';
+          else if(BLOCK.has(child.tagName)&&!isRoot)out+='\n';
+        }
+      }
+    }
+  }
+  walk(el,true);
+  return out.replace(/\n{3,}/g,'\n\n').replace(/\n+$/,'');
+}
+function readField(){const f=$('eField');const ttl=f.querySelector('.ttl'),bd=f.querySelector('.bd');const title=domToText(ttl);const body=domToText(bd);const bodyHtml=bd?bd.innerHTML:'';const imgs=[...bd.querySelectorAll('img')].map(im=>im.dataset.id).filter(Boolean);return{title,body,bodyHtml,imgOrder:imgs}}
 function scrollCaret(){const sel=window.getSelection();if(!sel.rangeCount)return;const r=sel.getRangeAt(0).cloneRange();r.collapse(false);const rect=r.getBoundingClientRect();if(!rect||(!rect.top&&!rect.bottom))return;const pad=90;if(rect.bottom>window.innerHeight-pad){window.scrollBy({top:rect.bottom-(window.innerHeight-pad),behavior:'smooth'})}else if(rect.top<pad+60){window.scrollBy({top:rect.top-(pad+60),behavior:'smooth'})}}
 let autosaveT=null;
 async function silentSave(){
@@ -429,7 +462,7 @@ async function silentSave(){
     cur.checks=(cur.checks||[]).filter(c=>c.t.trim());
     const empty=!f.title&&!f.body&&!cur.checks.length&&!cur.imgs.length;
     if(empty)return;
-    Object.assign(cur,{title:f.title,body:f.body,updated:Date.now()});
+    Object.assign(cur,{title:f.title,body:f.body,bodyHtml:f.bodyHtml,updated:Date.now()});
     if(!S.n.includes(cur))S.n.push(cur);
     await dbPut('notes',cur);
   }catch(err){console.error('autosave failed',err);toast('autosave failed: '+err.message)}
@@ -448,7 +481,23 @@ $('ed').classList.add('open');pushNav('editor');updateUndoBtns();
 if(!id){const t=$('eField').querySelector('.ttl');setTimeout(()=>{t.focus()},250)}}
 function closeEd(){$('ed').classList.remove('open');$('pm').classList.remove('open');cur=null;popNav()}
 
-async function loadImgsInline(){const bd=$('eField').querySelector('.bd');if(!bd)return;for(const id of cur.imgs){if(bd.querySelector('img[data-id="'+id+'"]'))continue;const r=await dbGet('imgs',id);if(!r)continue;const w=document.createElement('span');w.className='img-del';w.contentEditable='false';w.innerHTML='<img data-id="'+id+'" src="'+r.data+'"><button aria-label="remove photo">'+I('x')+'</button>';w.querySelector('button').onclick=async()=>{cur.imgs=cur.imgs.filter(x=>x!==id);await dbDel('imgs',id);w.remove()};bd.appendChild(w)}}
+async function loadImgsInline(){
+  const bd=$('eField').querySelector('.bd');if(!bd)return;
+  // if bodyHtml already placed images (new-format notes), just wire up delete buttons + fill src
+  for(const im of bd.querySelectorAll('img[data-id]')){
+    const id=im.dataset.id;const r=await dbGet('imgs',id);if(r)im.src=r.data;
+    const wrap=im.closest('.img-del');
+    if(wrap&&!wrap.querySelector('button')){const btn=document.createElement('button');btn.setAttribute('aria-label','remove photo');btn.innerHTML=I('x');btn.onclick=async()=>{cur.imgs=cur.imgs.filter(x=>x!==id);await dbDel('imgs',id);wrap.remove()};wrap.appendChild(btn)}
+  }
+  // legacy fallback: any imgs in cur.imgs not yet placed in the DOM (old notes saved before bodyHtml existed)
+  for(const id of cur.imgs){
+    if(bd.querySelector('img[data-id="'+id+'"]'))continue;
+    const r=await dbGet('imgs',id);if(!r)continue;
+    const w=document.createElement('span');w.className='img-del';w.contentEditable='false';w.innerHTML='<img data-id="'+id+'" src="'+r.data+'"><button aria-label="remove photo">'+I('x')+'</button>';
+    w.querySelector('button').onclick=async()=>{cur.imgs=cur.imgs.filter(x=>x!==id);await dbDel('imgs',id);w.remove()};
+    bd.appendChild(w);
+  }
+}
 
 let lastSavedId=null;
 async function commit(fromPop){
@@ -458,7 +507,7 @@ try{
 const f=readField();
 cur.checks=(cur.checks||[]).filter(c=>c.t.trim());
 const empty=!f.title&&!f.body&&!cur.checks.length&&!cur.imgs.length;
-if(!empty){Object.assign(cur,{title:f.title,body:f.body,updated:Date.now()});if(!S.n.includes(cur))S.n.push(cur);await dbPut('notes',cur);lastSavedId=cur.id}
+if(!empty){Object.assign(cur,{title:f.title,body:f.body,bodyHtml:f.bodyHtml,updated:Date.now()});if(!S.n.includes(cur))S.n.push(cur);await dbPut('notes',cur);lastSavedId=cur.id}
 $('ed').classList.remove('open');$('pm').classList.remove('open');cur=null;if(!fromPop)popNav();
 render();if(!empty)toast('saved')
 }catch(err){console.error('save failed',err);toast('save failed: '+err.message);$('ed').classList.remove('open');cur=null;if(!fromPop)popNav();render()}
