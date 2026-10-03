@@ -453,7 +453,18 @@ function domToText(el){
   return out.replace(/\n{3,}/g,'\n\n').replace(/\n+$/,'');
 }
 function readField(){const f=$('eField');const ttl=f.querySelector('.ttl'),bd=f.querySelector('.bd');const title=domToText(ttl);const body=domToText(bd);const bodyHtml=bd?bd.innerHTML:'';const imgs=[...bd.querySelectorAll('img')].map(im=>im.dataset.id).filter(Boolean);return{title,body,bodyHtml,imgOrder:imgs}}
-function scrollCaret(){const sel=window.getSelection();if(!sel.rangeCount)return;const r=sel.getRangeAt(0).cloneRange();r.collapse(false);const rect=r.getBoundingClientRect();if(!rect||(!rect.top&&!rect.bottom))return;const pad=90;if(rect.bottom>window.innerHeight-pad){window.scrollBy({top:rect.bottom-(window.innerHeight-pad),behavior:'smooth'})}else if(rect.top<pad+60){window.scrollBy({top:rect.top-(pad+60),behavior:'smooth'})}}
+function scrollCaret(){
+  try{
+    const sel=window.getSelection();if(!sel||!sel.rangeCount)return;
+    const r=sel.getRangeAt(0).cloneRange();r.collapse(false);
+    if(typeof r.getBoundingClientRect!=='function')return;
+    const rect=r.getBoundingClientRect();
+    if(!rect||(!rect.top&&!rect.bottom))return;
+    const pad=90;
+    if(rect.bottom>window.innerHeight-pad){window.scrollBy({top:rect.bottom-(window.innerHeight-pad),behavior:'smooth'})}
+    else if(rect.top<pad+60){window.scrollBy({top:rect.top-(pad+60),behavior:'smooth'})}
+  }catch(err){/* never let a scroll glitch block saving */console.warn('scrollCaret skipped',err)}
+}
 let autosaveT=null;
 async function silentSave(){
   if(!cur)return;
@@ -469,7 +480,8 @@ async function silentSave(){
 }
 function scheduleAutosave(){clearTimeout(autosaveT);autosaveT=setTimeout(silentSave,700)}
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&cur){clearTimeout(autosaveT);silentSave()}});
-$('eField').addEventListener('input',()=>{scrollCaret();scheduleAutosave()});
+$('eField').addEventListener('input',scheduleAutosave);
+$('eField').addEventListener('input',scrollCaret);
 $('eField').addEventListener('keyup',e=>{if(['Enter','ArrowDown','ArrowUp'].includes(e.key))scrollCaret()});
 
 function openEd(id){cur=id?S.n.find(n=>n.id===id):{id:uid(),title:'',body:'',checks:[],imgs:[],folder:folder,pinned:0,arch:arch?1:0,fs:16,created:Date.now(),updated:Date.now()};cur.checks=cur.checks||[];cur.imgs=cur.imgs||[];
